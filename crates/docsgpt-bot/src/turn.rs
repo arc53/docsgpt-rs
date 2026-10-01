@@ -358,6 +358,8 @@ struct TurnState {
     thinking: bool,
     conversation_id: Option<String>,
     position: Option<u32>,
+    /// This turn has been counted in its conversation.
+    recorded: bool,
     outcome: Option<Outcome>,
     /// Something changed since the last update.
     dirty: bool,
@@ -431,9 +433,10 @@ impl TurnState {
         if id.is_empty() || self.conversation_id.as_ref() == Some(&id) {
             return;
         }
-        if self.position.is_none() {
+        if !self.recorded {
+            self.recorded = true;
             match core.storage.record_turn(&turn.scope, &turn.agent.name, &id).await {
-                Ok(p) => self.position = Some(p),
+                Ok(p) => self.position = p,
                 Err(e) => tracing::warn!(error = %e, "could not record turn"),
             }
         } else if let Err(e) = core.storage.set_conversation(&turn.scope, &turn.agent.name, &id).await {

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -12,7 +12,7 @@ homepage = "https://www.docsgpt.cloud/"
 authors = ["Arc53"]
 
 [workspace.dependencies]
-docsgpt = { path = "crates/docsgpt", version = "0.1.0" }
+docsgpt = { path = "crates/docsgpt", version = "0.2.0" }
 async-trait = "0.1.92"
 regex = "1.13.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 (unreleased)
+
+### docsgpt-bot 0.2.0
+
+- **Breaking:** `Storage::record_turn` returns `Option<u32>` and `Conversation::turns` is `Option<u32>`. `None` means the count is unknown.
+- SQLite files from the Telegram bot v2 hold conversations whose earlier answers were never counted. When the turn counter is added to such a file, those conversations are marked unknown rather than starting at 0, so 👍/👎 in them can't land on the wrong answer. Each chat is counted again from its next new conversation.
+- `run_turn` records no position and no message ref while the count is unknown, so such answers offer no feedback.
+
+### docsgpt 0.2.0
+
+No changes; released together with `docsgpt-bot`.
+
 ## 0.1.0 (2026-10-01)
 
 ### docsgpt-bot 0.1.0

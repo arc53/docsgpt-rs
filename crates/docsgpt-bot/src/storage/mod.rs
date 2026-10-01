@@ -65,8 +65,10 @@ impl Scope {
 pub struct Conversation {
     /// DocsGPT conversation id.
     pub id: String,
-    /// Turns recorded in it so far; the next answer's position.
-    pub turns: u32,
+    /// Turns recorded in it so far, i.e. the next answer's position. `None`
+    /// when unknown: the conversation predates turn counting (a file from the
+    /// Telegram bot v2), so its answers' positions can't be known.
+    pub turns: Option<u32>,
 }
 
 /// Small per-scope state. `extra` holds platform-specific fields.
@@ -148,11 +150,12 @@ pub trait Storage: Send + Sync {
     async fn clear_conversation(&self, scope: &Scope, agent: &str) -> Result<()>;
 
     /// Count one turn in conversation `id` and return its position (0 for the
-    /// first). Switching to a new id starts again at 0.
+    /// first). Switching to a new id starts again at 0. Returns `None` while the
+    /// conversation's count is unknown (see [`Conversation::turns`]).
     ///
     /// Call it once per turn, as soon as DocsGPT has reserved the answer (its
     /// `message_id` event) and the conversation id is known.
-    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<u32>;
+    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<Option<u32>>;
 
     /// The scope's state (default when nothing is stored).
     async fn chat_state(&self, scope: &Scope) -> Result<ChatState>;
@@ -209,28 +212,28 @@ pub async fn contract_tests(s: &dyn Storage) {
 
     // Turns count per conversation and restart with a new one.
     s.set_conversation(&scope, "a", "conv-1").await.unwrap();
-    assert_eq!(s.record_turn(&scope, "a", "conv-1").await.unwrap(), 0);
-    assert_eq!(s.record_turn(&scope, "a", "conv-1").await.unwrap(), 1);
+    assert_eq!(s.record_turn(&scope, "a", "conv-1").await.unwrap(), Some(0));
+    assert_eq!(s.record_turn(&scope, "a", "conv-1").await.unwrap(), Some(1));
     s.set_conversation(&scope, "a", "conv-1").await.unwrap();
     assert_eq!(
         s.conversation(&scope, "a").await.unwrap(),
         Some(Conversation {
             id: "conv-1".into(),
-            turns: 2
+            turns: Some(2)
         })
     );
-    assert_eq!(s.record_turn(&scope, "a", "conv-2").await.unwrap(), 0);
+    assert_eq!(s.record_turn(&scope, "a", "conv-2").await.unwrap(), Some(0));
     assert_eq!(
         s.conversation(&scope, "a").await.unwrap(),
         Some(Conversation {
             id: "conv-2".into(),
-            turns: 1
+            turns: Some(1)
         })
     );
     s.set_conversation(&scope, "a", "conv-3").await.unwrap();
-    assert_eq!(s.conversation(&scope, "a").await.unwrap().unwrap().turns, 0);
+    assert_eq!(s.conversation(&scope, "a").await.unwrap().unwrap().turns, Some(0));
     // record_turn on a scope with no conversation yet.
-    assert_eq!(s.record_turn(&scope, "b", "conv-b").await.unwrap(), 0);
+    assert_eq!(s.record_turn(&scope, "b", "conv-b").await.unwrap(), Some(0));
 
     // Agents, threads and namespaces are separate.
     let thread = Scope::new("bot", "C1", "1712.5");

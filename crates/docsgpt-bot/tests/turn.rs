@@ -542,3 +542,51 @@ async fn final_raw_and_note() {
     assert_eq!(f.note().as_deref(), Some("_The answer was cut short: boom_"));
     assert_eq!(f.display_text(), "Hi\n\n_The answer was cut short: boom_");
 }
+
+#[tokio::test]
+async fn upgraded_conversations_get_no_feedback_until_a_new_one_starts() {
+    let docs = MockDocsGpt::start().await;
+    docs.on_stream(|body| reply_text("ok", body["conversation_id"].as_str().unwrap_or("conv-new")));
+    // A Telegram v2 file: a conversation with uncounted answers.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tg.db");
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE conversations (scope TEXT NOT NULL, agent TEXT NOT NULL, conversation_id TEXT NOT NULL,
+               updated_at INTEGER NOT NULL, PRIMARY KEY (scope, agent));
+             INSERT INTO conversations VALUES ('bot:C1:T1', 'default', 'conv-old', 1);",
+        )
+        .unwrap();
+    }
+    let storage = docsgpt_bot::storage::sqlite::SqliteStorage::open(path.to_str().unwrap())
+        .await
+        .unwrap();
+    let mut core = BotCore::new(
+        "bot",
+        docsgpt::Client::new(&docs.url).unwrap(),
+        Agents::new(vec![AgentConfig::new("default", "k")]).unwrap(),
+        Arc::new(storage),
+    );
+    core.options = Default::default();
+
+    let s = FakeSurface::new();
+    let r = answered(run_turn(&core, &s, Ask::new(scope(), "continue")).await.unwrap());
+    assert_eq!(
+        docs.rec.last("/stream").unwrap().body["conversation_id"],
+        "conv-old",
+        "the conversation continues"
+    );
+    assert_eq!((r.1.as_deref(), r.2), (Some("conv-old"), None));
+    assert!(!s.finished().can_rate());
+    assert_eq!(core.storage.message_ref("bot", "msg-1").await.unwrap(), None);
+
+    // After /new the next conversation is counted from 0.
+    core.storage.clear_conversation(&scope(), "default").await.unwrap();
+    let r = answered(
+        run_turn(&core, &FakeSurface::new(), Ask::new(scope(), "fresh"))
+            .await
+            .unwrap(),
+    );
+    assert_eq!((r.1.as_deref(), r.2), (Some("conv-new"), Some(0)));
+}

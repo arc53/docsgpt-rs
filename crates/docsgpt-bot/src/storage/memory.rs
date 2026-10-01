@@ -44,12 +44,12 @@ impl Storage for MemoryStorage {
         self.with(|i| {
             let entry = i.conversations.entry(conv_key(scope, agent)).or_insert(Conversation {
                 id: id.into(),
-                turns: 0,
+                turns: Some(0),
             });
             if entry.id != id {
                 *entry = Conversation {
                     id: id.into(),
-                    turns: 0,
+                    turns: Some(0),
                 };
             }
         });
@@ -61,20 +61,21 @@ impl Storage for MemoryStorage {
         Ok(())
     }
 
-    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<u32> {
+    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<Option<u32>> {
         Ok(self.with(|i| {
             let entry = i.conversations.entry(conv_key(scope, agent)).or_insert(Conversation {
                 id: id.into(),
-                turns: 0,
+                turns: Some(0),
             });
             if entry.id != id {
                 *entry = Conversation {
                     id: id.into(),
-                    turns: 0,
+                    turns: Some(0),
                 };
             }
-            entry.turns += 1;
-            entry.turns - 1
+            let position = entry.turns;
+            entry.turns = position.map(|n| n + 1);
+            position
         }))
     }
 

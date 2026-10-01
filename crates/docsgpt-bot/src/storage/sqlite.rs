@@ -65,13 +65,15 @@ impl SqliteStorage {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;")
             .map_err(Error::storage)?;
         conn.execute_batch(SCHEMA).map_err(Error::storage)?;
-        // Files from the Telegram bot v2 predate the turn counter.
+        // Files from the Telegram bot v2 predate the turn counter. Their
+        // conversations already hold answers that were never counted, so mark
+        // them unknown (-1) rather than start at 0 and misplace feedback.
         let has_turns: bool = conn
             .prepare("SELECT 1 FROM pragma_table_info('conversations') WHERE name = 'turns'")
             .and_then(|mut s| s.exists([]))
             .map_err(Error::storage)?;
         if !has_turns {
-            conn.execute_batch("ALTER TABLE conversations ADD COLUMN turns INTEGER NOT NULL DEFAULT 0;")
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN turns INTEGER NOT NULL DEFAULT -1;")
                 .map_err(Error::storage)?;
         }
         Ok(Self {
@@ -95,6 +97,7 @@ impl SqliteStorage {
 }
 
 /// Upsert that keeps `turns` when the id is unchanged and resets it otherwise.
+/// A negative `turns` means unknown.
 const SET_CONVERSATION: &str = "INSERT INTO conversations(scope, agent, conversation_id, turns, updated_at)
      VALUES (?1, ?2, ?3, 0, ?4)
      ON CONFLICT(scope, agent) DO UPDATE SET
@@ -113,7 +116,7 @@ impl Storage for SqliteStorage {
                 |r| {
                     Ok(Conversation {
                         id: r.get(0)?,
-                        turns: r.get(1)?,
+                        turns: u32::try_from(r.get::<_, i64>(1)?).ok(),
                     })
                 },
             )
@@ -143,13 +146,15 @@ impl Storage for SqliteStorage {
         .await
     }
 
-    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<u32> {
+    async fn record_turn(&self, scope: &Scope, agent: &str, id: &str) -> Result<Option<u32>> {
         let (scope, agent, id) = (scope.key(), agent.to_string(), id.to_string());
         self.run(move |c| {
             let tx = c.transaction()?;
             tx.execute(SET_CONVERSATION, params![scope, agent, id, unix_now()])?;
-            let position: u32 = tx.query_row(
-                "UPDATE conversations SET turns = turns + 1 WHERE scope = ?1 AND agent = ?2 RETURNING turns - 1",
+            let position: Option<u32> = tx.query_row(
+                "UPDATE conversations SET turns = CASE WHEN turns < 0 THEN turns ELSE turns + 1 END
+                 WHERE scope = ?1 AND agent = ?2
+                 RETURNING CASE WHEN turns < 0 THEN NULL ELSE turns - 1 END",
                 params![scope, agent],
                 |r| r.get(0),
             )?;
@@ -270,7 +275,7 @@ mod tests {
         let scope = Scope::new("b", "C", "");
         {
             let s = SqliteStorage::open(path).await.unwrap();
-            assert_eq!(s.record_turn(&scope, "a", "conv").await.unwrap(), 0);
+            assert_eq!(s.record_turn(&scope, "a", "conv").await.unwrap(), Some(0));
             s.update_chat_state(&scope, StatePatch::active_agent(Some("a")))
                 .await
                 .unwrap();
@@ -280,7 +285,7 @@ mod tests {
             s.conversation(&scope, "a").await.unwrap(),
             Some(Conversation {
                 id: "conv".into(),
-                turns: 1
+                turns: Some(1)
             })
         );
         assert_eq!(s.chat_state(&scope).await.unwrap().active_agent.as_deref(), Some("a"));
@@ -309,12 +314,21 @@ mod tests {
             s.conversation(&scope, "default").await.unwrap(),
             Some(Conversation {
                 id: "conv-old".into(),
-                turns: 0
+                turns: None
             })
         );
         let st = s.chat_state(&scope).await.unwrap();
         assert_eq!(st.active_agent.as_deref(), Some("sales"));
         assert_eq!(st.extra["last_question"], "hi");
-        assert_eq!(s.record_turn(&scope, "default", "conv-old").await.unwrap(), 0);
+        // Answers already in that conversation weren't counted: its positions are unknown.
+        assert_eq!(s.record_turn(&scope, "default", "conv-old").await.unwrap(), None);
+        assert_eq!(s.record_turn(&scope, "default", "conv-old").await.unwrap(), None);
+        // A new conversation is counted from the start.
+        assert_eq!(s.record_turn(&scope, "default", "conv-new").await.unwrap(), Some(0));
+        assert_eq!(s.record_turn(&scope, "default", "conv-new").await.unwrap(), Some(1));
+        // Reopening doesn't mark counted rows unknown again.
+        drop(s);
+        let s = SqliteStorage::open(path.to_str().unwrap()).await.unwrap();
+        assert_eq!(s.record_turn(&scope, "default", "conv-new").await.unwrap(), Some(2));
     }
 }
